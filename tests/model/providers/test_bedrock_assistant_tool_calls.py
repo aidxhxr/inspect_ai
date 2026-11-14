@@ -15,9 +15,12 @@ pytest.importorskip("aiobotocore")
 pytest.importorskip("botocore")
 
 from inspect_ai._util.content import ContentReasoning, ContentText  # noqa: E402
-from inspect_ai.model._chat_message import ChatMessageAssistant  # noqa: E402
+from inspect_ai.model._chat_message import (  # noqa: E402
+    ChatMessageAssistant,
+    ChatMessageTool,
+)
 from inspect_ai.model._providers.bedrock import converse_chat_message  # noqa: E402
-from inspect_ai.tool._tool_call import ToolCall  # noqa: E402
+from inspect_ai.tool._tool_call import ToolCall, ToolCallError  # noqa: E402
 
 
 def _tool_call(id: str, function: str) -> ToolCall:
@@ -76,3 +79,71 @@ async def test_assistant_tool_calls_without_content_unchanged():
     # No spurious NO_CONTENT text block; just the tool call.
     assert [b.toolUse.name for b in blocks if b.toolUse is not None] == ["pwd"]
     assert all(b.text is None for b in blocks)
+
+
+async def _tool_result(message: ChatMessageTool):
+    result = await converse_chat_message(message)
+    assert result is not None and len(result) == 1
+    tool_result = result[0].content[0].toolResult
+    assert tool_result is not None
+    return tool_result
+
+
+async def test_tool_error_message_sent_in_tool_result():
+    # A failed tool call has empty content and the reason on `error` (#5951).
+    tool_result = await _tool_result(
+        ChatMessageTool(
+            content="",
+            tool_call_id="t1",
+            function="lookup",
+            error=ToolCallError("file_not_found", "/tmp/missing: does not exist"),
+        )
+    )
+
+    assert tool_result.status == "error"
+    assert [c.text for c in tool_result.content] == ["/tmp/missing: does not exist"]
+
+
+@pytest.mark.parametrize(
+    "content", ["partial output", [ContentText(text="partial output")]]
+)
+async def test_tool_error_message_sent_instead_of_content(content):
+    tool_result = await _tool_result(
+        ChatMessageTool(
+            content=content,
+            tool_call_id="t1",
+            function="bash",
+            error=ToolCallError("timeout", "Command timed out before completing."),
+        )
+    )
+
+    assert tool_result.status == "error"
+    assert [c.text for c in tool_result.content] == [
+        "Command timed out before completing."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"), [("partial output", "partial output"), ("", "error")]
+)
+async def test_tool_error_without_message_falls_back(content, expected):
+    tool_result = await _tool_result(
+        ChatMessageTool(
+            content=content,
+            tool_call_id="t1",
+            function="bash",
+            error=ToolCallError("unknown", ""),
+        )
+    )
+
+    assert tool_result.status == "error"
+    assert [c.text for c in tool_result.content] == [expected]
+
+
+async def test_successful_tool_result_content_unchanged():
+    tool_result = await _tool_result(
+        ChatMessageTool(content="ok", tool_call_id="t1", function="lookup")
+    )
+
+    assert tool_result.status == "success"
+    assert [c.text for c in tool_result.content] == ["ok"]
