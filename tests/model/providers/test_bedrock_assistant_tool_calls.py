@@ -124,7 +124,12 @@ async def test_tool_error_message_sent_instead_of_content(content):
 
 
 @pytest.mark.parametrize(
-    ("content", "expected"), [("partial output", "partial output"), ("", "error")]
+    ("content", "expected"),
+    [
+        ("partial output", "partial output"),
+        ([ContentText(text="partial output")], "partial output"),
+        ("", "error"),
+    ],
 )
 async def test_tool_error_without_message_falls_back(content, expected):
     tool_result = await _tool_result(
